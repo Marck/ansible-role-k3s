@@ -1,0 +1,26 @@
+---
+- block:
+  - name: rpi | configure boot/cmdline.txt when host is rpi
+    lineinfile:
+      path: /boot/cmdline.txt
+      line: cgroup_memory=1 cgroup_enable=memory
+    register: cgroup_change
+
+  - name: rpi | Get model name, memory OS version
+    shell: cat /proc/cpuinfo /proc/meminfo /etc/os-release | grep -E "Model|MemTotal|PRETTY_NAME|VERSION"
+    changed_when: false
+    register: pi_info
+  
+  - name: rpi | Output rpi info
+    debug:
+      msg: "{{ pi_info.stdout }}"
+
+  - name: rpi | Reboot after all changes
+    reboot:
+    become: true
+    register: reboot_result
+    when: 
+      - cgroup_change.failed is false
+      - cgroup_change.changed is true
+  become: true
+  when: rpi is true

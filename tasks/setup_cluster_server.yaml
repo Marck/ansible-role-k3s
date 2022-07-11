@@ -1,0 +1,21 @@
+---
+- name: server | Setup k3s server
+  shell: "curl -sfL https://get.k3s.io | K3S_TOKEN='{{ kubernetes.join_token }}' sh -s - server --cluster-init"
+  # no_log: true # token
+  register: k3s_cluster_setup_server_result
+
+- name: server | Setup status
+  debug:
+    msg: "{{ k3s_cluster_setup_server_result.stdout }}"
+
+- name: server | Get k3s service status
+  shell: systemctl start k3s
+  register: k3s_service_start
+  
+- name: server | Get k3s service status
+  shell: systemctl status k3s
+  register: k3s_service_status
+
+- name: server | Service status
+  debug:
+    msg: "{{ k3s_service_status.stdout }}"
