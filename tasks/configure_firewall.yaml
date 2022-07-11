@@ -1,3 +1,16 @@
 ---
-- name: Configure firewall ports
-  
+- name: Configure iptables ports on server
+  iptables:
+    chain: INPUT
+    protocol: tcp
+    destination_ports: "{{ kubernetes.firewall.inbound_server_ports }}"
+    jump: ACCEPT
+  when: server = true
+
+- name: Configure iptables ports on nodes
+  iptables:
+    chain: INPUT
+    protocol: tcp
+    destination_ports: "{{ kubernetes.firewall.inbound_node_ports }}"
+    jump: ACCEPT
+  when: node = true
