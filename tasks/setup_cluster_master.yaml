@@ -1,0 +1,16 @@
+---
+- name: masters | Setup k3s masters
+  shell: "curl -sfL https://get.k3s.io | K3S_TOKEN='{{ kubernetes.join_token }}' sh -s - server --cluster-init"
+  # no_log: true # token
+  register: k3s_cluster_setup_masters_result
+
+- name: masters | Get nodes
+  shell: kubectl get nodes -o wide
+  register: k3s_nodes_status
+
+- name: masters | Debug results
+  debug:
+    msg: "{{ item.stdout }}"
+  loop: 
+    - k3s_cluster_setup_masters_result.results
+    - k3s_nodes_status
