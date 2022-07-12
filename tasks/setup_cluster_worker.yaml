@@ -9,9 +9,9 @@
         - masters[0]
       register: k3s_cluster_setup_workers_result
 
-    - name: workers -> masters[0] | Label worker node as worker
+    - name: workers -> masters | Label worker node as worker
       shell: "/usr/local/bin/kubectl label --overwrite node {{ hostname }} node-role.kubernetes.io/worker=worker"
-      delegate_to: "{{ item }}[0]"
+      delegate_to: "{{ item }}"
       with_inventory_hostnames:
         - masters[0]
       register: k3s_worker_labeled
