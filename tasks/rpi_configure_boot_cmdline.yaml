@@ -1,10 +1,12 @@
 ---
 - block:
-  - name: rpi | configure boot/cmdline.txt when host is rpi
+  - name: rpi | Activate cgroup support
     lineinfile:
       path: /boot/cmdline.txt
-      line: cgroup_memory=1 cgroup_enable=memory
-    register: cgroup_change
+      regexp: '^((?!.*\bcgroup_enable=cpuset cgroup_memory=1 cgroup_enable=memory\b).*)$'
+      line: '\1 cgroup_enable=cpuset cgroup_memory=1 cgroup_enable=memory'
+      backrefs: true
+    register: cgroup_change 
 
   - name: rpi | Get model name, memory OS version
     shell: cat /proc/cpuinfo /proc/meminfo /etc/os-release | grep -E "Model|MemTotal|PRETTY_NAME|VERSION"

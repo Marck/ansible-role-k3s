@@ -1,16 +1,24 @@
 ---
 - name: masters | Setup k3s masters
-  shell: "curl -sfL https://get.k3s.io | K3S_TOKEN='{{ kubernetes.join_token }}' sh -s - server --cluster-init"
-  # no_log: true # token
-  register: k3s_cluster_setup_masters_result
+  block:
+    - name: masters | Download k3s and init cluster
+      shell: "curl -sfL https://get.k3s.io | K3S_TOKEN='{{ kubernetes.server_token }}' sh -s - server --cluster-init"
+      # no_log: true # token
+      register: k3s_cluster_setup_masters_result
 
-- name: masters | Get nodes
-  shell: kubectl get nodes -o wide
-  register: k3s_nodes_status
+    - name: masters | Wait for api server to become ready
+      pause:
+        seconds: 15
+      when: k3s_cluster_setup_masters_result.changed is true
+      
+    - name: masters | Get nodes
+      shell: kubectl get nodes -o wide
+      register: k3s_nodes_status
 
-- name: masters | Debug results
-  debug:
-    msg: "{{ item.stdout }}"
-  loop: 
-    - k3s_cluster_setup_masters_result.results
-    - k3s_nodes_status
+    - name: masters | Debug results
+      debug:
+        msg: "{{ item.stdout }}"
+      loop: 
+        - "{{ k3s_cluster_setup_masters_result }}"
+        - "{{ k3s_nodes_status }}"
+  become: true

@@ -1,24 +1,30 @@
 ---
 - name: workers | Setup k3s workers
-  # shell: "K3S_TOKEN='{{ kubernetes.join_token }}' k3s masters --masters https://{{ item }}:6443"
-  shell: "curl -sfL https://get.k3s.io | K3S_URL=https://{{ item }}:6443 K3S_TOKEN='{{ kubernetes.join_token }}' sh -"
-  # no_log: true # token
-  with_inventory_hostnames:
-    - masters[0]
-  register: k3s_cluster_setup_workers_result
+  block:
+    - name: workers | Download k3s and join existing cluster
+      # shell: "K3S_TOKEN='{{ kubernetes.join_token }}' k3s server --masters https://{{ item }}:6443"
+      shell: "curl -sfL https://get.k3s.io | K3S_URL=https://{{ item }}:6443 K3S_TOKEN='{{ kubernetes.server_token }}' sh -"
+      # no_log: true # token
+      with_inventory_hostnames:
+        - masters[0]
+      register: k3s_cluster_setup_workers_result
 
-- name: workers | Label worker node as worker
-  shell: "kubectl label node {{ hostname }} node-role.kubernetes.io/worker=worker"
-  register: k3s_worker_labeled
+    - name: workers -> masters[0] | Label worker node as worker
+      shell: "/usr/local/bin/kubectl label --overwrite node {{ hostname }} node-role.kubernetes.io/worker=worker"
+      delegate_to: "{{ item }}[0]"
+      with_inventory_hostnames:
+        - masters[0]
+      register: k3s_worker_labeled
 
-- name: workers | Get k3s agent service status
-  shell: systemctl status k3s-agent
-  register: k3s_service_status
+    - name: workers | Get k3s agent service status
+      shell: systemctl status k3s-agent.service
+      register: k3s_service_status
 
-- name: workers | Debug results
-  debug:
-    msg: "{{ item.stdout }}"
-  loop: 
-    - k3s_cluster_setup_workers_result.results
-    - k3s_worker_labeled
-    - k3s_service_status
+    - name: workers | Debug results
+      debug:
+        msg: "{{ item.stdout }}"
+      loop: 
+        - "{{ k3s_cluster_setup_workers_result }}"
+        - "{{ k3s_worker_labeled }}"
+        - "{{ k3s_service_status }}"
+  become: true

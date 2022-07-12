@@ -1,5 +1,25 @@
 ---
 - block:
+  - name: Flush iptables before changing to iptables-legacy
+    iptables:
+      flush: true
+    changed_when: false   # iptables flush always returns changed
+    when: rpi is true
+
+  - name: Changing to iptables-legacy
+    alternatives:
+      path: /usr/sbin/iptables-legacy
+      name: iptables
+    register: ip4_legacy
+    when: rpi is true
+
+  - name: Changing to ip6tables-legacy
+    alternatives:
+      path: /usr/sbin/ip6tables-legacy
+      name: ip6tables
+    register: ip6_legacy
+    when: rpi is true
+
   - name: Configure iptables ports on masters
     iptables:
       chain: INPUT
@@ -9,6 +29,7 @@
     loop: "{{ kubernetes.firewall.inbound_masters_ports }}"
     loop_control:
       loop_var: port
+    register: iptables_master_ports_applied
     when: type == 'master'
 
   - name: Configure iptables ports on workers
@@ -20,5 +41,19 @@
     loop: "{{ kubernetes.firewall.inbound_workers_ports }}"
     loop_control:
       loop_var: port
+    register: iptables_worker_ports_applied
     when: type == 'worker'
+
+  # Below steps are needed, because the iptables rules are not persistent and gone at boot
+  - name: Save rules to file
+    shell: iptables-save > /etc/iptables.conf
+    when: iptables_master_ports_applied.changed is true or iptables_worker_ports_applied.changed is true
+
+  - name: Edit /etc/rc.local and insert the iptables-restore restore command
+    lineinfile:
+      path: /etc/rc.local
+      regexp: '^iptables-restore'
+      insertbefore: '^exit 0'
+      line: sudo iptables-restore < /etc/iptables.conf
+    when: iptables_master_ports_applied.changed is true or iptables_worker_ports_applied.changed is true
   become: true
