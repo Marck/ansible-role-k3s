@@ -1,0 +1,21 @@
+---
+- name: node | Setup k3s nodes
+  # shell: "K3S_TOKEN='{{ kubernetes.join_token }}' k3s server --server https://{{ item }}:6443"
+  shell: "curl -sfL https://get.k3s.io | K3S_URL=https://{{ item }}:6443 K3S_TOKEN='{{ kubernetes.join_token }}' sh -"
+  # no_log: true # token
+  with_inventory_hostnames:
+    - server[0]
+  register: k3s_cluster_setup_node_result
+
+- name: node | Setup status
+  debug:
+    msg: "{{ item.stdout }}"
+  loop: "{{ k3s_cluster_setup_node_result.results }}"
+  
+- name: node | Get k3s agent service status
+  shell: systemctl status k3s-agent
+  register: k3s_service_status
+
+- name: node | Service status
+  debug:
+    msg: "{{ k3s_service_status.stdout }}"
