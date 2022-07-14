@@ -22,7 +22,7 @@
 
     - name: workers | Debug results
       debug:
-        msg: "{{ item.stdout }}"
+        msg: "{{ item }}"
       loop: 
         - "{{ k3s_cluster_setup_workers_result }}"
         - "{{ k3s_worker_labeled }}"
