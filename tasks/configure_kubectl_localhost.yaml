@@ -1,0 +1,38 @@
+---
+# Configure a new kube config to manage the cluster. See here for more information: https://rancher.com/docs/k3s/latest/en/cluster-access/
+- block:
+  - name: Create tempfile 
+    tempfile:
+      state: file
+    register: tempfile
+
+  - name: Copy /etc/rancher/k3s/k3s.yaml from master to temp file
+    copy: 
+      src: /etc/rancher/k3s/k3s.yaml
+      dest: "{{ tempfile.path }}"
+      remote_src: true
+    become: true
+    register: k3s_config_copy
+
+  # Using with_items for future expansions
+  # Tabs are needed because the config has tabs
+  - name: Change config from 127.0.0.1 to master IP in tempfile
+    lineinfile:
+      path: "{{ tempfile.path }}"
+      search_string: "{{ item.search_string }}"
+      line: "{{ item.replace_string }}"
+    with_items:
+      - { search_string: '    server: https://127.0.0.1:6443', replace_string: "    server: https://{{ ansible_default_ipv4.address }}:6443" }
+
+  - name: Copy tempfile from master to localhost
+    fetch: 
+      src: "{{ tempfile.path }}"
+      dest: ~/.kube/config_home
+      flat: true
+  
+  always:
+    - name: Remove tempfile
+      file: 
+        path: "{{ tempfile.path }}"
+        state: absent
+      when: tempfile.path is defined
