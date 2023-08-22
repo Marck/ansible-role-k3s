@@ -1,0 +1,17 @@
+---
+- block:
+  - name: rpi | Configure DNS
+    lineinfile:
+      path: /etc/dhcpcd.conf
+      line: 'static domain_name_servers=1.1.1.1 8.8.8.8'
+      state: present
+      insertafter: "EOF"
+    register: dns_change 
+
+  - name: rpi | Restart DHCP service
+    shell: sudo service dhcpcd restart
+    when: 
+      - dns_change.failed is false
+      - dns_change.changed is true
+  become: true
+  when: rpi is true
