@@ -21,10 +21,12 @@
       path: "{{ tempfile.path }}"
       search_string: "{{ item.search_string }}"
       line: "{{ item.replace_string }}"
+    become: true
     with_items:
       - { search_string: '    server: https://127.0.0.1:6443', replace_string: "    server: https://{{ ansible_default_ipv4.address }}:6443" }
 
   - name: Copy tempfile from master to localhost
+    become: true
     fetch: 
       src: "{{ tempfile.path }}"
       dest: ~/.kube/config_home
@@ -32,6 +34,7 @@
   
   always:
     - name: Remove tempfile
+      become: true
       file: 
         path: "{{ tempfile.path }}"
         state: absent

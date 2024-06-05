@@ -8,11 +8,19 @@
       with_inventory_hostnames:
         - masters[0]
       register: k3s_cluster_setup_workers_result
+    
+    - name: workers | Start agent service
+      shell: "systemctl start k3s-agent.service"
+      with_inventory_hostnames:
+        - masters[0]
+      register: k3s_cluster_setup_workers_service_start
 
     - name: worker | Wait for api server to become ready
       pause:
         seconds: 15
-      when: k3s_cluster_setup_workers_result.changed is true
+      when: 
+        - k3s_cluster_setup_workers_result.changed is true
+        - k3s_cluster_setup_workers_service_start.changed is true
 
     - name: workers -> masters | Label worker node as worker
       shell: "/usr/local/bin/kubectl label --overwrite node {{ hostname }} node-role.kubernetes.io/worker=worker"
