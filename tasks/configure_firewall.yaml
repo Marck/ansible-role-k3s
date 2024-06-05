@@ -43,6 +43,12 @@
       loop_var: port
     register: iptables_worker_ports_applied
     when: type == 'worker'
+  
+  - name: Stop and disable firewalld on NUC
+    shell: systemctl stop firewalld; systemctl disable firewalld
+    when: 
+      - type == 'worker'
+      - rpi is false
 
   # Below steps are needed, because the iptables rules are not persistent and gone at boot
   - name: Save rules to file
