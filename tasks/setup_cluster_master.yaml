@@ -8,7 +8,7 @@
 
     - name: masters | Wait for api server to become ready
       pause:
-        seconds: 30
+        seconds: 120
       when: k3s_cluster_setup_masters_result.changed is true
       
     - name: masters | Get nodes
