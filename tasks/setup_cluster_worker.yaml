@@ -17,7 +17,7 @@
 
     - name: worker | Wait for api server to become ready
       pause:
-        seconds: 15
+        seconds: 30
       when: 
         - k3s_cluster_setup_workers_result.changed is true
         - k3s_cluster_setup_workers_service_start.changed is true
