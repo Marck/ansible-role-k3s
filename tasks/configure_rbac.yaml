@@ -48,7 +48,8 @@
       shell: kubectl apply -f -
       args:
         stdin: "{{ lookup('template', 'rbac-clusterrole-deploy-readwrite.yaml.j2') }}"
-      changed_when: true
+      register: rbac_clusterrole_result
+      changed_when: "'configured' in rbac_clusterrole_result.stdout or 'created' in rbac_clusterrole_result.stdout"
 
     - name: rbac | Apply user ClusterRoleBindings
       shell: kubectl apply -f -
@@ -57,7 +58,8 @@
       loop: "{{ k3s_rbac_users }}"
       loop_control:
         loop_var: rbac_user
-      changed_when: true
+      register: rbac_binding_result
+      changed_when: "'configured' in rbac_binding_result.stdout or 'created' in rbac_binding_result.stdout"
 
     - name: rbac | Read user certificates
       slurp:
