@@ -1,0 +1,118 @@
+---
+- name: rbac | Configure Kubernetes RBAC users
+  block:
+    - name: rbac | Ensure openssl is installed
+      package:
+        name: openssl
+        state: present
+
+    - name: rbac | Create RBAC certificate directory
+      file:
+        path: "{{ k3s_rbac_cert_dir }}"
+        state: directory
+        mode: '0700'
+        owner: root
+        group: root
+
+    - name: rbac | Generate user private keys
+      command: openssl genrsa -out {{ k3s_rbac_cert_dir }}/{{ item.name }}.key 4096
+      args:
+        creates: "{{ k3s_rbac_cert_dir }}/{{ item.name }}.key"
+      loop: "{{ k3s_rbac_users }}"
+      no_log: true
+
+    - name: rbac | Generate user certificate signing requests
+      command: >
+        openssl req -new
+        -key {{ k3s_rbac_cert_dir }}/{{ item.name }}.key
+        -subj "/CN={{ item.name }}/O={{ item.group }}"
+        -out {{ k3s_rbac_cert_dir }}/{{ item.name }}.csr
+      args:
+        creates: "{{ k3s_rbac_cert_dir }}/{{ item.name }}.csr"
+      loop: "{{ k3s_rbac_users }}"
+
+    - name: rbac | Sign user certificates with cluster CA
+      command: >
+        openssl x509 -req
+        -in {{ k3s_rbac_cert_dir }}/{{ item.name }}.csr
+        -CA /var/lib/rancher/k3s/server/tls/client-ca.crt
+        -CAkey /var/lib/rancher/k3s/server/tls/client-ca.key
+        -CAcreateserial
+        -out {{ k3s_rbac_cert_dir }}/{{ item.name }}.crt
+        -days {{ item.cert_days | default(365) }}
+      args:
+        creates: "{{ k3s_rbac_cert_dir }}/{{ item.name }}.crt"
+      loop: "{{ k3s_rbac_users }}"
+
+    - name: rbac | Apply deploy-readwrite ClusterRole
+      shell: kubectl apply -f -
+      args:
+        stdin: "{{ lookup('template', 'rbac-clusterrole-deploy-readwrite.yaml.j2') }}"
+      changed_when: true
+
+    - name: rbac | Apply user ClusterRoleBindings
+      shell: kubectl apply -f -
+      args:
+        stdin: "{{ lookup('template', 'rbac-clusterrolebinding.yaml.j2') }}"
+      loop: "{{ k3s_rbac_users }}"
+      loop_control:
+        loop_var: rbac_user
+      changed_when: true
+
+    - name: rbac | Read user certificates
+      slurp:
+        src: "{{ k3s_rbac_cert_dir }}/{{ item.name }}.crt"
+      loop: "{{ k3s_rbac_users }}"
+      register: k3s_user_certs
+
+    - name: rbac | Read user private keys
+      slurp:
+        src: "{{ k3s_rbac_cert_dir }}/{{ item.name }}.key"
+      loop: "{{ k3s_rbac_users }}"
+      register: k3s_user_keys
+      no_log: true
+
+    - name: rbac | Get cluster API server URL
+      shell: kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}'
+      register: k3s_api_server
+      changed_when: false
+
+    - name: rbac | Get cluster CA certificate data (base64)
+      shell: kubectl config view --minify --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}'
+      register: k3s_ca_data
+      changed_when: false
+
+    - name: rbac | Generate kubeconfig files on master
+      template:
+        src: kubeconfig.yaml.j2
+        dest: "{{ k3s_rbac_cert_dir }}/kubeconfig-{{ k3s_rbac_users[idx].name }}.yaml"
+        mode: '0600'
+        owner: root
+        group: root
+      loop: "{{ k3s_user_certs.results }}"
+      loop_control:
+        index_var: idx
+      vars:
+        kubeconfig_username: "{{ k3s_rbac_users[idx].name }}"
+        user_cert_b64: "{{ item.content }}"
+        user_key_b64: "{{ k3s_user_keys.results[idx].content }}"
+        api_server: "{{ k3s_api_server.stdout }}"
+        ca_data_b64: "{{ k3s_ca_data.stdout }}"
+
+    - name: rbac | Ensure local kubeconfig destination exists
+      file:
+        path: "{{ k3s_rbac_kubeconfig_dest }}"
+        state: directory
+        mode: '0700'
+      delegate_to: localhost
+      become: false
+
+    - name: rbac | Fetch kubeconfig files to Ansible controller
+      fetch:
+        src: "{{ k3s_rbac_cert_dir }}/kubeconfig-{{ item.name }}.yaml"
+        dest: "{{ k3s_rbac_kubeconfig_dest }}/kubeconfig-{{ item.name }}.yaml"
+        flat: true
+        mode: '0600'
+      loop: "{{ k3s_rbac_users }}"
+
+  become: true
