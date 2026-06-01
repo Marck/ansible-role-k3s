@@ -1,0 +1,72 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: deploy-readwrite
+rules:
+  # Workloads
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - statefulsets
+      - daemonsets
+      - replicasets
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["batch"]
+    resources:
+      - jobs
+      - cronjobs
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["autoscaling"]
+    resources:
+      - horizontalpodautoscalers
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Pods
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/log
+      - pods/portforward
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources:
+      - pods/exec
+    verbs: ["create"]
+  # Services & networking
+  - apiGroups: [""]
+    resources:
+      - services
+      - endpoints
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["networking.k8s.io", "extensions"]
+    resources:
+      - ingresses
+      - ingresses/status
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Config & secrets
+  - apiGroups: [""]
+    resources:
+      - configmaps
+      - secrets
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Storage
+  - apiGroups: [""]
+    resources:
+      - persistentvolumeclaims
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Namespaces: create allowed, delete not allowed
+  - apiGroups: [""]
+    resources:
+      - namespaces
+    verbs: ["get", "list", "watch", "create"]
+  # ServiceAccounts: needed for workloads that reference SAs
+  - apiGroups: [""]
+    resources:
+      - serviceaccounts
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  # Nodes & events: read-only for troubleshooting
+  - apiGroups: [""]
+    resources:
+      - nodes
+      - events
+    verbs: ["get", "list", "watch"]

@@ -1,0 +1,23 @@
+---
+# RBAC users to create. Each user gets a client certificate signed by the cluster CA
+# and a kubeconfig fetched to k3s_rbac_kubeconfig_dest on the Ansible controller.
+#
+# group: maps to the x509 Organization field; system:masters grants cluster-admin automatically.
+# cluster_role: the ClusterRole to bind to via ClusterRoleBinding.
+# cert_days: certificate validity in days.
+k3s_rbac_users:
+  - name: marck
+    group: system:masters
+    cluster_role: cluster-admin
+    cert_days: 3650
+  - name: claude
+    group: deploy-readwrite
+    cluster_role: deploy-readwrite
+    cert_days: 365
+
+# Local destination for fetched kubeconfig files.
+# Defaults to ~/.kube/ on the Ansible controller.
+k3s_rbac_kubeconfig_dest: "{{ lookup('env', 'HOME') }}/.kube"
+
+# Directory on the master node where user certs and kubeconfigs are stored.
+k3s_rbac_cert_dir: /etc/rancher/k3s/rbac
