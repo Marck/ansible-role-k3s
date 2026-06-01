@@ -35,6 +35,7 @@
       with_inventory_hostnames:
         - masters[0]
       register: k3s_worker_labeled
+      changed_when: "'not labeled' not in k3s_worker_labeled.stdout"
 
     - name: workers | Get k3s agent service status
       shell: systemctl status k3s-agent.service
