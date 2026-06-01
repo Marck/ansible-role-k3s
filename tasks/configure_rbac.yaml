@@ -48,7 +48,8 @@
       shell: kubectl apply -f -
       args:
         stdin: "{{ lookup('template', 'rbac-clusterrole-deploy-readwrite.yaml.j2') }}"
-      changed_when: true
+      register: rbac_clusterrole_result
+      changed_when: "'configured' in rbac_clusterrole_result.stdout or 'created' in rbac_clusterrole_result.stdout"
 
     - name: rbac | Apply user ClusterRoleBindings
       shell: kubectl apply -f -
@@ -57,7 +58,8 @@
       loop: "{{ k3s_rbac_users }}"
       loop_control:
         loop_var: rbac_user
-      changed_when: true
+      register: rbac_binding_result
+      changed_when: "'configured' in rbac_binding_result.stdout or 'created' in rbac_binding_result.stdout"
 
     - name: rbac | Read user certificates
       slurp:
@@ -71,11 +73,6 @@
       loop: "{{ k3s_rbac_users }}"
       register: k3s_user_keys
       no_log: true
-
-    - name: rbac | Get cluster API server URL
-      shell: kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}'
-      register: k3s_api_server
-      changed_when: false
 
     - name: rbac | Get cluster CA certificate data (base64)
       shell: kubectl config view --minify --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}'
@@ -92,11 +89,12 @@
       loop: "{{ k3s_user_certs.results }}"
       loop_control:
         index_var: idx
+      no_log: true
       vars:
         kubeconfig_username: "{{ k3s_rbac_users[idx].name }}"
         user_cert_b64: "{{ item.content }}"
         user_key_b64: "{{ k3s_user_keys.results[idx].content }}"
-        api_server: "{{ k3s_api_server.stdout }}"
+        api_server: "https://{{ ansible_host | default(inventory_hostname) }}:6443"
         ca_data_b64: "{{ k3s_ca_data.stdout }}"
 
     - name: rbac | Ensure local kubeconfig destination exists
@@ -112,7 +110,14 @@
         src: "{{ k3s_rbac_cert_dir }}/kubeconfig-{{ item.name }}.yaml"
         dest: "{{ k3s_rbac_kubeconfig_dest }}/kubeconfig-{{ item.name }}.yaml"
         flat: true
+      loop: "{{ k3s_rbac_users }}"
+
+    - name: rbac | Restrict fetched kubeconfig permissions to owner-only
+      file:
+        path: "{{ k3s_rbac_kubeconfig_dest }}/kubeconfig-{{ item.name }}.yaml"
         mode: '0600'
+      delegate_to: localhost
+      become: false
       loop: "{{ k3s_rbac_users }}"
 
   become: true
