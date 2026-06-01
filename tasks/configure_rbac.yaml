@@ -114,7 +114,14 @@
         src: "{{ k3s_rbac_cert_dir }}/kubeconfig-{{ item.name }}.yaml"
         dest: "{{ k3s_rbac_kubeconfig_dest }}/kubeconfig-{{ item.name }}.yaml"
         flat: true
+      loop: "{{ k3s_rbac_users }}"
+
+    - name: rbac | Restrict fetched kubeconfig permissions to owner-only
+      file:
+        path: "{{ k3s_rbac_kubeconfig_dest }}/kubeconfig-{{ item.name }}.yaml"
         mode: '0600'
+      delegate_to: localhost
+      become: false
       loop: "{{ k3s_rbac_users }}"
 
   become: true
