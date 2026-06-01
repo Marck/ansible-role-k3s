@@ -54,7 +54,7 @@
     when:
       - type == 'worker'
       - rpi is false
-    ignore_errors: true
+    failed_when: false
 
   # Below steps are needed, because the iptables rules are not persistent and gone at boot
   - name: Save rules to file

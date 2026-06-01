@@ -89,6 +89,7 @@
       loop: "{{ k3s_user_certs.results }}"
       loop_control:
         index_var: idx
+      no_log: true
       vars:
         kubeconfig_username: "{{ k3s_rbac_users[idx].name }}"
         user_cert_b64: "{{ item.content }}"

@@ -21,7 +21,7 @@
   - name: kubectl-localhost | Write admin kubeconfig to Ansible controller
     copy:
       content: "{{ k3s_admin_config }}"
-      dest: "~/.kube/config_home"
+      dest: "{{ lookup('env', 'HOME') }}/.kube/config_home"
       mode: '0600'
     delegate_to: localhost
     become: false

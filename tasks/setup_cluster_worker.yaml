@@ -44,7 +44,7 @@
 
     - name: workers | Debug results
       debug:
-        msg: "{{ item }}"
+        msg: "{{ item.stdout | default(item.results | map(attribute='stdout') | join('\n')) }}"
       loop:
         - "{{ k3s_worker_labeled }}"
         - "{{ k3s_service_status }}"
