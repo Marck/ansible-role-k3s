@@ -74,11 +74,6 @@
       register: k3s_user_keys
       no_log: true
 
-    - name: rbac | Get cluster API server URL
-      shell: kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}'
-      register: k3s_api_server
-      changed_when: false
-
     - name: rbac | Get cluster CA certificate data (base64)
       shell: kubectl config view --minify --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}'
       register: k3s_ca_data
@@ -98,7 +93,7 @@
         kubeconfig_username: "{{ k3s_rbac_users[idx].name }}"
         user_cert_b64: "{{ item.content }}"
         user_key_b64: "{{ k3s_user_keys.results[idx].content }}"
-        api_server: "{{ k3s_api_server.stdout }}"
+        api_server: "https://{{ ansible_default_ipv4.address }}:6443"
         ca_data_b64: "{{ k3s_ca_data.stdout }}"
 
     - name: rbac | Ensure local kubeconfig destination exists
