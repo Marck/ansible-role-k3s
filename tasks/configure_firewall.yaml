@@ -1,11 +1,5 @@
 ---
 - block:
-  - name: Flush iptables before changing to iptables-legacy
-    iptables:
-      flush: true
-    changed_when: false   # iptables flush always returns changed
-    when: rpi is true
-
   - name: Changing to iptables-legacy
     alternatives:
       path: /usr/sbin/iptables-legacy
@@ -19,6 +13,14 @@
       name: ip6tables
     register: ip6_legacy
     when: rpi is true
+
+  # Only flush when actually switching backends - otherwise rules added in this
+  # run would be wiped and re-added as changed on every subsequent run.
+  - name: Flush iptables after switching to iptables-legacy
+    iptables:
+      flush: true
+    changed_when: false
+    when: rpi is true and (ip4_legacy.changed or ip6_legacy.changed)
 
   - name: Configure iptables ports on masters
     iptables:
@@ -43,16 +45,21 @@
       loop_var: port
     register: iptables_worker_ports_applied
     when: type == 'worker'
-  
+
   - name: Stop and disable firewalld on NUC
-    shell: systemctl stop firewalld; systemctl disable firewalld
-    when: 
+    systemd:
+      name: firewalld
+      state: stopped
+      enabled: false
+    when:
       - type == 'worker'
       - rpi is false
+    ignore_errors: true
 
   # Below steps are needed, because the iptables rules are not persistent and gone at boot
   - name: Save rules to file
     shell: iptables-save > /etc/iptables.conf
+    changed_when: false
     when: iptables_master_ports_applied.changed is true or iptables_worker_ports_applied.changed is true
 
   - name: Edit /etc/rc.local and insert the iptables-restore restore command
