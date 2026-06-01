@@ -2,7 +2,7 @@
 - name: masters | Setup k3s masters
   block:
     - name: masters | Download k3s and init cluster
-      shell: "curl -sfL https://get.k3s.io | K3S_TOKEN='{{ kubernetes.server_token }}' sh -s - server --cluster-init"
+      shell: "curl -sfL https://get.k3s.io | K3S_TOKEN='{{ kubernetes.server_token }}' sh -s - server --cluster-init --write-kubeconfig-mode=0600"
       # no_log: true # token
       register: k3s_cluster_setup_masters_result
 
