@@ -93,7 +93,7 @@
         kubeconfig_username: "{{ k3s_rbac_users[idx].name }}"
         user_cert_b64: "{{ item.content }}"
         user_key_b64: "{{ k3s_user_keys.results[idx].content }}"
-        api_server: "https://{{ ansible_default_ipv4.address }}:6443"
+        api_server: "https://{{ ansible_host | default(inventory_hostname) }}:6443"
         ca_data_b64: "{{ k3s_ca_data.stdout }}"
 
     - name: rbac | Ensure local kubeconfig destination exists
