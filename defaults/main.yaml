@@ -5,3 +5,13 @@
 k3s_node_dns_servers:
   - 1.1.1.1
   - 1.0.0.1
+
+# Node kernel tunables (tasks/configure_sysctl.yaml), written to
+# /etc/sysctl.d/90-k3s.conf. Values are treated as minimums: the task asserts
+# the running value is at least this, so a later drop-in silently overriding one
+# fails the play instead of passing.
+k3s_node_sysctls:
+  # 128 by default, counted per uid across the WHOLE node — every root
+  # container shares it. systemd-as-PID-1 (unifi-os-server) cannot allocate its
+  # manager object once it runs out and exits before starting a single unit.
+  fs.inotify.max_user_instances: 1024
