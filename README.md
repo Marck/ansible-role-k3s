@@ -10,6 +10,7 @@ Ansible role to install and configure a k3s cluster. Handles master setup, worke
 | `setup_cluster_worker.yaml`        | Join worker nodes to the cluster          |
 | `configure_firewall.yaml`          | Open required firewall ports              |
 | `configure_dns.yaml`               | Static public node DNS via nmcli (never the in-cluster AdGuard VIP — avoids the image-pull bootstrap deadlock; servers via `k3s_node_dns_servers`) |
+| `configure_sysctl.yaml`            | Node kernel tunables via `/etc/sysctl.d/90-k3s.conf` (`k3s_node_sysctls`) — notably `fs.inotify.max_user_instances`, which is per-uid node-wide and stops systemd-in-a-container from booting once exhausted |
 | `rpi_configure_boot_cmdline.yaml`  | Raspberry Pi boot config (cgroups)        |
 | `configure_rbac.yaml`              | Create scoped RBAC users with kubeconfigs |
 

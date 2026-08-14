@@ -1,0 +1,66 @@
+---
+# Kernel tunables the cluster's workloads depend on, written as a drop-in so
+# they survive reboots.
+#
+# fs.inotify.max_user_instances is the one that hurts. It defaults to 128 and is
+# counted **per uid across the whole node** — every container running as root
+# draws from the same pool — so on a node with thirty-odd pods it is already
+# spent. A workload that needs its own instances then fails at startup with an
+# error that reads like its own bug:
+#
+#     Failed to create control group inotify object: Too many open files
+#     Failed to allocate manager object.
+#
+# That is systemd-as-PID-1 (the unifi-os-server chart) refusing to boot, but any
+# file-watching process — a dev server, a log shipper, a config reloader — hits
+# the same ceiling and reports it as "too many open files", which sends you
+# hunting the wrong limit entirely.
+#
+# It is NOT a namespaced sysctl, so a pod cannot set it for itself with
+# `securityContext.sysctls`; it has to be the node. Charts that need it work
+# around it with a privileged init container writing /proc/sys — this task is
+# what makes those workarounds removable.
+- block:
+    - name: all | Write the k3s sysctl drop-in
+      copy:
+        dest: /etc/sysctl.d/90-k3s.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          # Managed by the k3s Ansible role (tasks/configure_sysctl.yaml).
+          # Change `k3s_node_sysctls` and re-run the playbook — local edits are
+          # overwritten.
+          {% for key, value in k3s_node_sysctls.items() %}
+          {{ key }} = {{ value }}
+          {% endfor %}
+      register: k3s_sysctl_dropin
+
+    # `sysctl --system` rather than `-p /etc/sysctl.d/90-k3s.conf`: it reloads
+    # every drop-in in order, so the result matches what the node gets at boot
+    # instead of whatever this one file happens to say.
+    - name: all | Apply the sysctl settings without rebooting
+      command: sysctl --system
+      when: k3s_sysctl_dropin is changed
+      changed_when: true
+
+    - name: all | Read back the applied values
+      command: "sysctl -n {{ item.key }}"
+      loop: "{{ k3s_node_sysctls | dict2items }}"
+      register: k3s_sysctl_applied
+      changed_when: false
+
+    # A drop-in that silently does not take (an unknown key, or a later file
+    # overriding it) is worse than no task at all — the workload still fails and
+    # the playbook still says "ok".
+    - name: all | Fail if a value did not take
+      assert:
+        that: item.stdout | int >= (k3s_node_sysctls[item.item.key] | int)
+        fail_msg: >-
+          {{ item.item.key }} is {{ item.stdout }} on {{ inventory_hostname }},
+          expected at least {{ k3s_node_sysctls[item.item.key] }} — something
+          later in /etc/sysctl.d is overriding it.
+      loop: "{{ k3s_sysctl_applied.results }}"
+      loop_control:
+        label: "{{ item.item.key }}"
+  become: true
