@@ -44,8 +44,12 @@
       when: k3s_sysctl_dropin is changed
       changed_when: true
 
+    # Skipped under --check: the drop-in has not been written and `command`
+    # does not run, so the read-back would come back empty and the assert below
+    # would fail on a value it was never allowed to set.
     - name: all | Read back the applied values
       command: "sysctl -n {{ item.key }}"
+      when: not ansible_check_mode
       loop: "{{ k3s_node_sysctls | dict2items }}"
       register: k3s_sysctl_applied
       changed_when: false
@@ -61,6 +65,7 @@
           expected at least {{ k3s_node_sysctls[item.item.key] }} — something
           later in /etc/sysctl.d is overriding it.
       loop: "{{ k3s_sysctl_applied.results }}"
+      when: not ansible_check_mode
       loop_control:
         label: "{{ item.item.key }}"
   become: true
