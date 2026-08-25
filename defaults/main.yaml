@@ -2,9 +2,23 @@
 # Node-level DNS servers (tasks/configure_dns.yaml). Public resolvers only —
 # NEVER the in-cluster AdGuard VIP, or nodes cannot pull images while the
 # cluster's own DNS is down. Override in the playbook's group_vars if needed.
+#
+# Use TWO DIFFERENT OPERATORS, not two addresses from one. This used to be
+# 1.1.1.1 + 1.0.0.1 — both Cloudflare, one anycast network — which is a pair of
+# addresses, not a pair of providers. On 2026-08-19 both timed out together for
+# 42 minutes (318 failures across 39 domains: package registries, the ArgoCD
+# repo-server's SRV lookups, the cloudflared tunnel, and every Home Assistant
+# cloud integration). Every pod in the cluster resolves through these, because
+# CoreDNS forwards what it cannot answer to the node's resolver — so a single
+# provider having a bad hour is a cluster-wide DNS outage.
+#
+# The resolver list is ordered: the first is tried first, the second only when
+# it does not answer. Keeping one Cloudflare entry preserves the usual fast
+# path; Quad9 is a separate operator on a separate network, so the two are
+# unlikely to fail in the same event.
 k3s_node_dns_servers:
-  - 1.1.1.1
-  - 1.0.0.1
+  - 1.1.1.1        # Cloudflare
+  - 9.9.9.9        # Quad9 — deliberately a DIFFERENT operator, not 1.0.0.1
 
 # Node kernel tunables (tasks/configure_sysctl.yaml), written to
 # /etc/sysctl.d/90-k3s.conf. Values are treated as minimums: the task asserts
