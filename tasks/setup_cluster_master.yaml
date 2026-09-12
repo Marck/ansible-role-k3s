@@ -1,16 +1,20 @@
 ---
 - name: masters | Setup k3s masters
   block:
-    - name: masters | Check if k3s is already installed
-      stat:
-        path: /usr/local/bin/k3s
-      register: k3s_binary
+    - name: masters | Resolve the k3s version to install
+      include_tasks: resolve_version.yaml
 
-    - name: masters | Download k3s and init cluster
-      shell: "curl -sfL https://get.k3s.io | K3S_TOKEN='{{ kubernetes.server_token }}' sh -s - server --cluster-init --write-kubeconfig-mode=0600"
+    # INSTALL_K3S_VERSION is passed explicitly rather than letting the installer
+    # pick: unversioned is how this cluster ended up on an end-of-life release
+    # and stayed there. Re-running the installer over an existing node is the
+    # documented k3s upgrade path; it replaces the binary and restarts the unit,
+    # so the API is briefly unavailable. Servers before agents, which is the
+    # order the playbook's separate plays already give us.
+    - name: masters | Install or upgrade k3s and init cluster
+      shell: "curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION='{{ k3s_target_version }}' K3S_TOKEN='{{ kubernetes.server_token }}' sh -s - server --cluster-init --write-kubeconfig-mode=0600"
       # no_log: true # token
       register: k3s_cluster_setup_masters_result
-      when: not k3s_binary.stat.exists
+      when: k3s_should_install | bool
 
     - name: masters | Wait for api server to become ready
       pause:

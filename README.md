@@ -104,3 +104,68 @@ ansible-playbook install_kubernetes.yaml -i ../../inventories/kubernetes.yaml --
 - k3s installed and cluster running (run `setup_cluster_master.yaml` first)
 - `openssl` available on the master node (installed automatically if missing)
 - Ansible controller needs write access to `k3s_rbac_kubeconfig_dest`
+
+## k3s version and upgrades
+
+The installer used to be called with no version (`curl -sfL https://get.k3s.io | sh`),
+so a node got whatever was "stable" the day it was built. Combined with the install
+task being guarded by `when: not k3s_binary.stat.exists`, that meant the role **never
+upgraded anything**: the cluster sat on v1.29.6 long after it reached upstream end of
+life (2025-02-28).
+
+**A fresh node now follows `k3s_channel` (default `stable`)**, so a new cluster gets the
+current release without anyone remembering a version number.
+
+| variable | default | meaning |
+| --- | --- | --- |
+| `k3s_channel` | `stable` | channel to resolve when no exact version is pinned |
+| `k3s_version` | `""` | exact release (`v1.30.14+k3s2`), overrides the channel |
+| `k3s_upgrade` | `false` | allow re-running the installer over an existing node |
+| `k3s_upgrade_step` | `true` | walk forward one minor per run instead of aiming at `k3s_channel` |
+| `k3s_allow_minor_skip` | `false` | permit crossing more than one Kubernetes minor |
+
+### Upgrades are opt-in, and stepwise
+
+Without `k3s_upgrade=true` the role still only installs where k3s is absent, so an
+unrelated playbook run can never restart the control plane underneath a running
+cluster.
+
+Kubernetes does not support skipping minor versions and k3s inherits that, so an
+upgrade crossing more than one minor **fails the play** rather than running. With
+`k3s_channel: stable` an out-of-date cluster would otherwise try to jump straight to
+the newest release:
+
+```
+Refusing to upgrade k3s-mas01 from v1.29.6+k3s2 to v1.36.4+k3s1: that crosses
+7 minor versions and Kubernetes supports only one at a time.
+```
+
+You do not have to look the next version up. `k3s_upgrade_step` (on by default) targets
+**one minor past whatever is installed**, so the same command, run repeatedly, walks the
+cluster forward:
+
+```sh
+ansible-playbook install_kubernetes.yaml --tags cluster -e k3s_upgrade=true
+# -> v1.30.x   verify, then run the identical command again
+# -> v1.31.x   ... and so on
+# -> once the cluster reaches the stable release it reports "no change"
+```
+
+Verify between every hop: nodes Ready on the new version, ArgoCD Applications Healthy,
+DNS answering over the LAN path, etcd latency unchanged.
+
+To aim somewhere specific instead, turn stepping off and name the target. The skip guard
+still applies:
+
+```sh
+ansible-playbook install_kubernetes.yaml --tags cluster \
+  -e k3s_upgrade=true -e k3s_upgrade_step=false -e k3s_channel=v1.31
+```
+
+Servers are upgraded before agents, which the playbook's separate `masters` and
+`workers` plays already give us: the skew policy allows an agent older than its
+server, never newer.
+
+Re-running the installer is the documented k3s upgrade path. It replaces the binary
+and restarts the unit, so **the API is briefly unavailable on that node**, and on a
+single-server cluster that means a short control-plane outage per hop.
