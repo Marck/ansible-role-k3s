@@ -29,3 +29,50 @@ k3s_node_sysctls:
   # container shares it. systemd-as-PID-1 (unifi-os-server) cannot allocate its
   # manager object once it runs out and exits before starting a single unit.
   fs.inotify.max_user_instances: 1024
+
+# ── k3s version and upgrades ────────────────────────────────────────────────
+# The installer used to be called with no version at all
+# (`curl -sfL https://get.k3s.io | sh`), which means a node got whatever was
+# "stable" the day it was built and then never moved again: the install task is
+# guarded by `when: not k3s_binary.stat.exists`. That is how this cluster ended
+# up on v1.29.6, which reached upstream end of life on 2025-02-28.
+#
+# A FRESH node now follows k3s_channel, so a new cluster gets the current
+# release without anyone having to remember a version number.
+k3s_channel: stable
+
+# Pin an exact release (e.g. "v1.30.14+k3s2") to override the channel entirely.
+# Empty means "resolve k3s_channel at run time".
+k3s_version: ""
+
+# Upgrades are OPT-IN, and deliberately so. Without this the role still only
+# installs where k3s is absent, so an unrelated playbook run can never restart
+# the control plane underneath a running cluster. Turn it on for the upgrade
+# itself:
+#
+#   ansible-playbook install_kubernetes.yaml --tags cluster \
+#     -e k3s_upgrade=true -e k3s_channel=v1.30
+#
+k3s_upgrade: false
+
+# Kubernetes does not support skipping minor versions, and k3s inherits that:
+# 1.29 -> 1.30 -> 1.31 -> ... one hop at a time, cluster verified healthy in
+# between. With k3s_channel at "stable" an out-of-date cluster would otherwise
+# try to jump straight to the newest release in a single run.
+#
+# So an upgrade that crosses more than one minor FAILS the play instead of
+# running. Set this true only if you genuinely mean to skip, and know why.
+k3s_allow_minor_skip: false
+
+# Walk forward ONE minor per run, rather than aiming straight at k3s_channel.
+# This is what makes the upgrade a repeatable command instead of a lookup: run
+# it, get 1.30; verify; run the same command again, get 1.31; and so on until
+# the cluster reaches the stable release, after which it reports "no change".
+#
+# Set false to target k3s_channel / k3s_version verbatim (still refused if that
+# would skip a minor, unless k3s_allow_minor_skip is also set).
+k3s_upgrade_step: true
+
+# Overridable so the version-resolution logic can be exercised against a stub
+# binary instead of a real node.
+k3s_binary_path: /usr/local/bin/k3s

@@ -1,0 +1,120 @@
+---
+# Works out which k3s release this run should install, and refuses to make a
+# jump Kubernetes does not support.
+#
+# Sets, for the calling task file:
+#   k3s_installed_version   e.g. "v1.29.6+k3s2", or "" when k3s is absent
+#   k3s_target_version      e.g. "v1.30.14+k3s2"
+#   k3s_should_install      true when the installer should run
+#
+# No regex anywhere on purpose. `regex_search` with a capture group RAISES on a
+# non-match in current Ansible ("'NoneType' object has no attribute 'group'"),
+# so a changed output format or an empty redirect would fail the play with an
+# unreadable Jinja error instead of the intended message. Splitting cannot throw.
+- name: version | Read the installed k3s version
+  ansible.builtin.command: "{{ k3s_binary_path }} --version"
+  register: k3s_version_raw
+  changed_when: false
+  failed_when: false
+  become: "{{ k3s_become | default(true) }}"
+
+# `k3s --version` prints "k3s version v1.29.6+k3s2 (hash)", so take the token
+# that looks like a version rather than trusting its position.
+- name: version | Parse the installed version
+  ansible.builtin.set_fact:
+    k3s_installed_version: >-
+      {{ (k3s_version_raw.stdout | default('') | split | select('match', 'v[0-9]')
+          | list | first | default('', true))
+         if k3s_version_raw.rc == 0 else '' }}
+
+# The channel endpoint 302s to the GitHub release for its current pick, so the
+# last path segment of the redirect IS the version. Resolving "stable" also
+# gives the ceiling that stepwise upgrades walk towards.
+- name: version | Resolve the stable channel
+  ansible.builtin.uri:
+    url: "https://update.k3s.io/v1-release/channels/stable"
+    follow_redirects: none
+    status_code: [200, 301, 302]
+  register: k3s_stable_lookup
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: version | Note the stable release
+  ansible.builtin.set_fact:
+    k3s_stable_version: "{{ k3s_stable_lookup.location | default('') | split('/') | last | default('', true) }}"
+
+- name: version | Fail when the stable channel could not be resolved
+  ansible.builtin.fail:
+    msg: "Could not resolve the k3s stable channel; refusing to guess a version."
+  when: not k3s_stable_version.startswith('v')
+
+# Stepwise is the default because Kubernetes allows only one minor per hop. It
+# makes the upgrade a repeatable command rather than a lookup: run it, get the
+# next minor, verify, run the SAME command again for the one after. When the
+# cluster reaches stable it reports "no change" and stops.
+#
+# Set k3s_upgrade_step=false to target k3s_channel or k3s_version verbatim.
+- name: version | Pick the channel to resolve
+  ansible.builtin.set_fact:
+    k3s_wanted_channel: >-
+      {{ ('v1.' ~ (((k3s_installed_version | split('.'))[1] | int) + 1))
+         if (k3s_installed_version | length > 0
+             and k3s_upgrade_step | bool
+             and k3s_version | length == 0
+             and ((k3s_installed_version | split('.'))[1] | int) < ((k3s_stable_version | split('.'))[1] | int))
+         else k3s_channel }}
+
+- name: version | Resolve the wanted channel
+  ansible.builtin.uri:
+    url: "https://update.k3s.io/v1-release/channels/{{ k3s_wanted_channel }}"
+    follow_redirects: none
+    status_code: [200, 301, 302]
+  register: k3s_channel_lookup
+  when: k3s_version | length == 0
+  delegate_to: localhost
+  become: false
+
+- name: version | Set the target version
+  ansible.builtin.set_fact:
+    k3s_target_version: >-
+      {{ k3s_version if k3s_version | length > 0
+         else (k3s_channel_lookup.location | default('') | split('/') | last | default('', true)) }}
+
+- name: version | Fail when the channel could not be resolved
+  ansible.builtin.fail:
+    msg: >-
+      Could not resolve k3s channel '{{ k3s_wanted_channel }}' to a release, and
+      no k3s_version was pinned. Refusing to run the installer unversioned: that
+      is how this cluster silently ended up on an end-of-life release.
+  when: not k3s_target_version.startswith('v')
+
+# Backstop. Stepwise mode cannot produce a skip, but an explicit k3s_channel or
+# k3s_version can, and so can k3s_upgrade_step=false.
+- name: version | Refuse to skip a minor version
+  ansible.builtin.fail:
+    msg: >-
+      Refusing to upgrade {{ inventory_hostname }} from
+      {{ k3s_installed_version }} to {{ k3s_target_version }}: that crosses
+      {{ ((k3s_target_version | split('.'))[1] | int) - ((k3s_installed_version | split('.'))[1] | int) }}
+      minor versions and Kubernetes supports only one at a time. Leave
+      k3s_upgrade_step at its default to walk forward one minor per run, or pass
+      -e k3s_channel=v1.{{ ((k3s_installed_version | split('.'))[1] | int) + 1 }} for this hop.
+  when:
+    - k3s_installed_version | length > 0
+    - k3s_target_version != k3s_installed_version
+    - not k3s_allow_minor_skip
+    - ((k3s_target_version | split('.'))[1] | int) > ((k3s_installed_version | split('.'))[1] | int) + 1
+
+- name: version | Decide whether to run the installer
+  ansible.builtin.set_fact:
+    k3s_should_install: >-
+      {{ (k3s_installed_version | length == 0)
+         or (k3s_upgrade | bool and k3s_target_version != k3s_installed_version) }}
+
+- name: version | Report
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }}: installed={{ k3s_installed_version | default('none', true) }}
+      target={{ k3s_target_version }} (channel {{ k3s_wanted_channel }}, stable is {{ k3s_stable_version }})
+      {{ 'INSTALL/UPGRADE' if k3s_should_install | bool else 'no change' }}
