@@ -21,7 +21,7 @@ The `configure_rbac.yaml` task provisions two users using x509 client certificat
 | User     | Group              | ClusterRole        | Cert validity | Access                         |
 | -------- | ------------------ | ------------------ | ------------- | ------------------------------ |
 | `marck`  | `system:masters`   | `cluster-admin`    | 10 years      | Full cluster admin             |
-| `claude` | `deploy-readwrite` | `deploy-readwrite` | 1 year        | Deploy + read/write workloads  |
+| `claude` | `deploy-readwrite` | `deploy-readwrite` | 1 year        | Deploy + read/write workloads, Argo CD sync |
 
 The `deploy-readwrite` ClusterRole covers:
 
@@ -38,8 +38,11 @@ The `deploy-readwrite` ClusterRole covers:
 - **Metrics**: metrics.k8s.io nodes/pods — read-only
 - **SealedSecrets**: bitnami.com sealedsecrets — full CRUD
 - **Certificates**: cert-manager.io certificates — full CRUD
+- **Argo CD**: argoproj.io applications, get/list/watch/patch (patch is what triggers a
+  sync); appprojects and applicationsets read-only
 
-NOT granted: node management, PersistentVolumes, cluster-level destructive operations.
+NOT granted: node management, PersistentVolumes, cluster-level destructive operations,
+creating or deleting Argo CD Applications (the app-of-apps repo owns those).
 
 ### Variables
 

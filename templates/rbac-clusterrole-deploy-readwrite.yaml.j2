@@ -80,7 +80,7 @@ rules:
       - clusterroles
       - clusterrolebindings
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # Metrics: read node/pod usage (metrics-server) — needed to grant it to widget SAs
+  # Metrics: read node/pod usage (metrics-server), needed to grant it to widget SAs
   - apiGroups: ["metrics.k8s.io"]
     resources:
       - nodes
@@ -96,3 +96,18 @@ rules:
     resources:
       - certificates
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Argo CD Applications: read state and trigger syncs. A sync is requested by writing
+  # the Application's top-level `operation` field, which is part of the CR itself (there
+  # is no operation subresource), so "patch" on applications is what a sync needs.
+  # create/update/delete are withheld: the app-of-apps repo owns Application definitions.
+  - apiGroups: ["argoproj.io"]
+    resources:
+      - applications
+    verbs: ["get", "list", "watch", "patch"]
+  # AppProjects & ApplicationSets: read-only, for resolving which project/generator
+  # an Application belongs to when diagnosing a failed sync.
+  - apiGroups: ["argoproj.io"]
+    resources:
+      - appprojects
+      - applicationsets
+    verbs: ["get", "list", "watch"]
