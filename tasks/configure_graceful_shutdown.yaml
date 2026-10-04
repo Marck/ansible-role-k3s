@@ -1,0 +1,123 @@
+---
+# Graceful node shutdown.
+#
+# Without it, a clean `poweroff` or `reboot` looks like a crash to Kubernetes:
+# nothing moves until the 40s node lease expires plus each pod's NotReady
+# toleration (300s by default), and when the node is the control plane nothing
+# moves at all, because the API server goes down with it.
+#
+# With it, the kubelet holds a logind delay lock, marks the node NotReady the
+# moment shutdown starts, stops its pods and marks them Failed. ReplicaSets
+# replace Failed pods at once, and the not-ready taint sends the replacements to
+# the other node. Rehearsed on k3s v1.36.4 (systemd + logind): NodeNotReady in
+# the same second as the poweroff, replacements created the moment the old
+# pods stopped, 4s before the node (and the API server on it) went down.
+#
+# These are kubelet CONFIG fields, not flags: `--kubelet-arg
+# shutdown-grace-period=...` makes the kubelet exit with "unknown flag" and k3s
+# with it. k3s starts the kubelet with --config-dir pointing at
+# k3s_kubelet_config_dir, so a KubeletConfiguration drop-in there is merged
+# after k3s's own 00-k3s-defaults.conf and survives k3s restarts.
+#
+# Covers clean shutdowns only. A power cut is still a crash.
+#
+# Expects k3s_unit: `k3s` on masters, `k3s-agent` on workers.
+- block:
+    # The kubelet refuses a critical-pods share at or above the total, and a
+    # kubelet that refuses its config takes k3s down with it.
+    - name: all | Graceful shutdown periods must be sane
+      assert:
+        that:
+          - k3s_shutdown_grace_period_seconds | int > 0
+          - k3s_shutdown_grace_period_critical_pods_seconds | int >= 0
+          - (k3s_shutdown_grace_period_critical_pods_seconds | int) < (k3s_shutdown_grace_period_seconds | int)
+        fail_msg: >-
+          k3s_shutdown_grace_period_critical_pods_seconds
+          ({{ k3s_shutdown_grace_period_critical_pods_seconds }}) must be below
+          k3s_shutdown_grace_period_seconds ({{ k3s_shutdown_grace_period_seconds }}).
+
+    - name: all | Ensure the kubelet drop-in directory exists
+      file:
+        path: "{{ k3s_kubelet_config_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: all | Write the graceful-shutdown kubelet drop-in
+      copy:
+        dest: "{{ k3s_kubelet_config_dir }}/50-graceful-shutdown.conf"
+        owner: root
+        group: root
+        mode: "0600"
+        content: |
+          # Managed by the k3s Ansible role (tasks/configure_graceful_shutdown.yaml).
+          # Change k3s_shutdown_grace_period_* and re-run the playbook; local edits
+          # are overwritten.
+          apiVersion: kubelet.config.k8s.io/v1beta1
+          kind: KubeletConfiguration
+          shutdownGracePeriod: {{ k3s_shutdown_grace_period_seconds | int }}s
+          shutdownGracePeriodCriticalPods: {{ k3s_shutdown_grace_period_critical_pods_seconds | int }}s
+      register: k3s_graceful_shutdown_dropin
+
+    # Restarting k3s leaves running pods alone (containerd keeps them); on the
+    # master the API is unavailable for about a minute.
+    - name: all | Restart k3s so the kubelet reads the drop-in
+      systemd:
+        name: "{{ k3s_unit }}"
+        state: restarted
+      when:
+        - k3s_graceful_shutdown_dropin is changed
+        - k3s_graceful_shutdown_apply | bool
+
+    - name: all | Wait for the node to be Ready again
+      command: >-
+        /usr/local/bin/kubectl get node {{ hostname }}
+        -o jsonpath={.status.conditions[?(@.type=="Ready")].status}
+      delegate_to: "{{ groups['masters'][0] }}"
+      register: k3s_graceful_shutdown_ready
+      until: k3s_graceful_shutdown_ready.stdout == "True"
+      retries: 30
+      delay: 10
+      changed_when: false
+      when:
+        - k3s_graceful_shutdown_apply | bool
+        - not ansible_check_mode
+
+    # A drop-in the kubelet silently ignores is worse than none: the play says
+    # "ok" and the next poweroff is still a crash. So ask the kubelet what it
+    # applied, and ask logind whether the kubelet raised its inhibit delay,
+    # which it only does when graceful shutdown is actually active.
+    - name: all | Read back what the kubelet applied
+      command: /usr/local/bin/kubectl get --raw /api/v1/nodes/{{ hostname }}/proxy/configz
+      delegate_to: "{{ groups['masters'][0] }}"
+      register: k3s_graceful_shutdown_configz
+      changed_when: false
+      when:
+        - k3s_graceful_shutdown_apply | bool
+        - not ansible_check_mode
+
+    - name: all | Read logind's inhibit delay
+      command: >-
+        busctl get-property org.freedesktop.login1 /org/freedesktop/login1
+        org.freedesktop.login1.Manager InhibitDelayMaxUSec
+      register: k3s_graceful_shutdown_logind
+      changed_when: false
+      when:
+        - k3s_graceful_shutdown_apply | bool
+        - not ansible_check_mode
+
+    - name: all | Fail if graceful shutdown did not take
+      assert:
+        that:
+          - (k3s_graceful_shutdown_configz.stdout | from_json).kubeletconfig.shutdownGracePeriod != "0s"
+          - (k3s_graceful_shutdown_logind.stdout.split()[1] | int) >= (k3s_shutdown_grace_period_seconds | int) * 1000000
+        fail_msg: >-
+          {{ inventory_hostname }}: kubelet reports shutdownGracePeriod
+          {{ (k3s_graceful_shutdown_configz.stdout | from_json).kubeletconfig.shutdownGracePeriod }}
+          and logind's inhibit delay is {{ k3s_graceful_shutdown_logind.stdout }};
+          the drop-in did not take.
+      when:
+        - k3s_graceful_shutdown_apply | bool
+        - not ansible_check_mode
+  become: true
