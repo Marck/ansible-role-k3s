@@ -11,7 +11,7 @@ Ansible role to install and configure a k3s cluster. Handles master setup, worke
 | `configure_firewall.yaml`          | Open required firewall ports              |
 | `configure_dns.yaml`               | Static public node DNS via nmcli (never the in-cluster AdGuard VIP — avoids the image-pull bootstrap deadlock; servers via `k3s_node_dns_servers`, which must name **two different operators**, not two addresses from one) |
 | `configure_sysctl.yaml`            | Node kernel tunables via `/etc/sysctl.d/90-k3s.conf` (`k3s_node_sysctls`) — notably `fs.inotify.max_user_instances`, which is per-uid node-wide and stops systemd-in-a-container from booting once exhausted |
-| `configure_graceful_shutdown.yaml` | kubelet graceful node shutdown via a KubeletConfiguration drop-in (`k3s_shutdown_grace_period_*`), so a clean poweroff moves pods in seconds instead of being treated as a crash. Config fields, not `--kubelet-arg` flags: those make the kubelet exit |
+| `configure_graceful_shutdown.yaml` | kubelet graceful node shutdown via a KubeletConfiguration drop-in (`k3s_shutdown_grace_period_*`), so a clean poweroff moves pods in seconds instead of being treated as a crash. Config fields, not `--kubelet-arg` flags: those make the kubelet exit. Also writes `logind.conf.d/zz-k3s-graceful-shutdown.conf`, because on Debian the unattended-upgrades drop-in (30s) otherwise outranks the kubelet's own and the kubelet silently gives up |
 | `rpi_configure_boot_cmdline.yaml`  | Raspberry Pi boot config (cgroups)        |
 | `configure_rbac.yaml`              | Create scoped RBAC users with kubeconfigs |
 

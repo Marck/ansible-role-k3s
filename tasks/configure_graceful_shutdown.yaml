@@ -44,6 +44,43 @@
         group: root
         mode: "0700"
 
+    # The kubelet raises logind's InhibitDelayMaxSec itself, through
+    # /etc/systemd/logind.conf.d/99-kubelet.conf. On Debian that file loses:
+    # the unattended-upgrades package ships
+    # /usr/lib/systemd/logind.conf.d/unattended-upgrades-logind-maxdelay.conf
+    # (30s), logind applies drop-ins in filename order across directories, and
+    # "u" sorts after "9". logind stays at 30s, the kubelet gives up ("Failed to
+    # start node shutdown manager ... waiting for logind InhibitDelayMaxSec"),
+    # and graceful shutdown is silently off while the kubelet still reports its
+    # shutdownGracePeriod. Found by the read-back below on the first rollout.
+    # Our file sorts last, and never goes below unattended-upgrades' 30s.
+    - name: all | Ensure the logind drop-in directory exists
+      file:
+        path: /etc/systemd/logind.conf.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: all | Give logind an inhibit delay at least as long as the grace period
+      copy:
+        dest: /etc/systemd/logind.conf.d/zz-k3s-graceful-shutdown.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          # Managed by the k3s Ansible role (tasks/configure_graceful_shutdown.yaml).
+          # Named to sort after every other logind drop-in, so it wins.
+          [Login]
+          InhibitDelayMaxSec={{ [k3s_shutdown_grace_period_seconds | int, 30] | max }}
+      register: k3s_graceful_shutdown_logind_dropin
+
+    # What the kubelet does too: logind rereads its configuration on SIGHUP.
+    - name: all | Make logind reread its configuration
+      command:
+        argv: [systemctl, kill, --signal=SIGHUP, systemd-logind]
+      when: k3s_graceful_shutdown_logind_dropin is changed
+
     - name: all | Write the graceful-shutdown kubelet drop-in
       copy:
         dest: "{{ k3s_kubelet_config_dir }}/50-graceful-shutdown.conf"
@@ -67,7 +104,7 @@
         name: "{{ k3s_unit }}"
         state: restarted
       when:
-        - k3s_graceful_shutdown_dropin is changed
+        - k3s_graceful_shutdown_dropin is changed or k3s_graceful_shutdown_logind_dropin is changed
         - k3s_graceful_shutdown_apply | bool
 
     # argv, not a command string: the string form is split shell-style, which
@@ -126,16 +163,34 @@
         - k3s_graceful_shutdown_apply | bool
         - not ansible_check_mode
 
+    # The definitive check: the kubelet only takes this delay lock once its
+    # shutdown manager has started, which it refuses to do when logind's delay
+    # is too short.
+    - name: all | Read the kubelet's shutdown delay lock
+      command:
+        argv: [systemd-inhibit, --list, --no-pager]
+      register: k3s_graceful_shutdown_inhibitors
+      until: k3s_graceful_shutdown_inhibitors.stdout_lines | select('search', 'kubelet') | select('search', 'delay') | list | length > 0
+      retries: 6
+      delay: 5
+      changed_when: false
+      failed_when: false
+      when:
+        - k3s_graceful_shutdown_apply | bool
+        - not ansible_check_mode
+
     - name: all | Fail if graceful shutdown did not take
       assert:
         that:
           - (k3s_graceful_shutdown_configz.stdout | from_json).kubeletconfig.shutdownGracePeriod != "0s"
           - (k3s_graceful_shutdown_logind.stdout.split()[1] | int) >= (k3s_shutdown_grace_period_seconds | int) * 1000000
+          - k3s_graceful_shutdown_inhibitors.stdout_lines | select('search', 'kubelet') | select('search', 'delay') | list | length > 0
         fail_msg: >-
           {{ inventory_hostname }}: kubelet reports shutdownGracePeriod
-          {{ (k3s_graceful_shutdown_configz.stdout | from_json).kubeletconfig.shutdownGracePeriod }}
-          and logind's inhibit delay is {{ k3s_graceful_shutdown_logind.stdout }};
-          the drop-in did not take.
+          {{ (k3s_graceful_shutdown_configz.stdout | from_json).kubeletconfig.shutdownGracePeriod }},
+          logind's inhibit delay is {{ k3s_graceful_shutdown_logind.stdout }}, and the
+          kubelet {{ 'holds' if (k3s_graceful_shutdown_inhibitors.stdout_lines | select('search', 'kubelet') | list) else 'does NOT hold' }}
+          a shutdown delay lock; graceful shutdown did not take.
       when:
         - k3s_graceful_shutdown_apply | bool
         - not ansible_check_mode
