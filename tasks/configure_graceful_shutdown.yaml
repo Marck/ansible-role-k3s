@@ -70,10 +70,19 @@
         - k3s_graceful_shutdown_dropin is changed
         - k3s_graceful_shutdown_apply | bool
 
+    # argv, not a command string: the string form is split shell-style, which
+    # strips the quotes around "Ready" and kubectl rejects the jsonpath
+    # ("unrecognized identifier Ready"). That failed the first rollout on
+    # 2026-10-05 while the node itself was fine.
     - name: all | Wait for the node to be Ready again
-      command: >-
-        /usr/local/bin/kubectl get node {{ hostname }}
-        -o jsonpath={.status.conditions[?(@.type=="Ready")].status}
+      command:
+        argv:
+          - /usr/local/bin/kubectl
+          - get
+          - node
+          - "{{ hostname }}"
+          - -o
+          - 'jsonpath={.status.conditions[?(@.type=="Ready")].status}'
       delegate_to: "{{ groups['masters'][0] }}"
       register: k3s_graceful_shutdown_ready
       until: k3s_graceful_shutdown_ready.stdout == "True"
@@ -89,7 +98,12 @@
     # applied, and ask logind whether the kubelet raised its inhibit delay,
     # which it only does when graceful shutdown is actually active.
     - name: all | Read back what the kubelet applied
-      command: /usr/local/bin/kubectl get --raw /api/v1/nodes/{{ hostname }}/proxy/configz
+      command:
+        argv:
+          - /usr/local/bin/kubectl
+          - get
+          - --raw
+          - "/api/v1/nodes/{{ hostname }}/proxy/configz"
       delegate_to: "{{ groups['masters'][0] }}"
       register: k3s_graceful_shutdown_configz
       changed_when: false
@@ -98,9 +112,14 @@
         - not ansible_check_mode
 
     - name: all | Read logind's inhibit delay
-      command: >-
-        busctl get-property org.freedesktop.login1 /org/freedesktop/login1
-        org.freedesktop.login1.Manager InhibitDelayMaxUSec
+      command:
+        argv:
+          - busctl
+          - get-property
+          - org.freedesktop.login1
+          - /org/freedesktop/login1
+          - org.freedesktop.login1.Manager
+          - InhibitDelayMaxUSec
       register: k3s_graceful_shutdown_logind
       changed_when: false
       when:
