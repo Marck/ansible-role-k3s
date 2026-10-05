@@ -76,3 +76,18 @@ k3s_upgrade_step: true
 # Overridable so the version-resolution logic can be exercised against a stub
 # binary instead of a real node.
 k3s_binary_path: /usr/local/bin/k3s
+
+# ── Graceful node shutdown (tasks/configure_graceful_shutdown.yaml) ─────────
+# How long a clean poweroff/reboot waits for the kubelet to stop pods, and how
+# much of that is reserved for system-critical pods (Traefik, CoreDNS), which
+# go last. Regular pods get the difference (40s), above the default 30s
+# terminationGracePeriodSeconds, so databases still stop cleanly. The critical
+# share must stay below the total or the kubelet refuses to start.
+k3s_shutdown_grace_period_seconds: 60
+k3s_shutdown_grace_period_critical_pods_seconds: 20
+# Where k3s points the kubelet's --config-dir. Not a k3s option; only the tests
+# change it.
+k3s_kubelet_config_dir: /var/lib/rancher/k3s/agent/etc/kubelet.conf.d
+# false writes the drop-in without restarting k3s or reading back (tests only).
+k3s_graceful_shutdown_apply: true
+
