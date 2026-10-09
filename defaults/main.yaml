@@ -91,3 +91,18 @@ k3s_kubelet_config_dir: /var/lib/rancher/k3s/agent/etc/kubelet.conf.d
 # false writes the drop-in without restarting k3s or reading back (tests only).
 k3s_graceful_shutdown_apply: true
 
+
+# ── Memory reservation (tasks/configure_memory_reservation.yaml) ───────────
+# Whole MiB. kube: k3s with its containerd and shims (1.1 GiB measured on the
+# worker; a server also runs the API server and etcd, so masters set more).
+# system: the OS outside k3s (sshd, journald, ...). eviction: the kubelet
+# evicts pods when less than this is available. Allocatable shrinks by all
+# three; the pods' requests must still fit or the play refuses.
+k3s_kube_reserved_memory_mib: 1024
+k3s_system_reserved_memory_mib: 256
+k3s_eviction_memory_available_mib: 500
+# The pod cgroup's cap, read back after the restart (systemd cgroup driver).
+# Only the tests change it.
+k3s_kubepods_memory_max_path: /sys/fs/cgroup/kubepods.slice/memory.max
+# false writes the drop-in without the fit check, restart or read-back (tests only).
+k3s_memory_reservation_apply: true
