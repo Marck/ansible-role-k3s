@@ -1,0 +1,253 @@
+---
+# Kubelet memory reservation.
+#
+# k3s writes a default kubelet drop-in (00-k3s-defaults.conf) whose
+# evictionHard holds imagefs/nodefs only. Setting that map drops the kubelet's
+# own memory.available default, and k3s reserves nothing for itself or the OS,
+# so allocatable == capacity and the pod cgroup (kubepods.slice) may take all
+# RAM. On 2026-10-09 the worker's pods did: the kernel thrashed program code
+# for 20 minutes (k3s, sshd and the node heartbeat all stalled) before a
+# global OOM kill freed it.
+#
+# This drop-in sets:
+#   * kubeReserved + systemReserved: with enforceNodeAllocatable [pods] (the
+#     default) the kubelet caps kubepods.slice at capacity minus both, so pods
+#     that outgrow it are OOM-killed inside their slice while k3s, containerd
+#     and sshd keep their memory;
+#   * evictionHard memory.available: below this the kubelet evicts pods, those
+#     furthest above their request first, before the cap is reached.
+#
+# Drop-ins merge as a JSON merge patch (kubelet cmd/kubelet/app/server.go), so
+# this evictionHard ADDS memory.available and k3s's imagefs/nodefs stay.
+# Rehearsed on k3s v1.36.4: the merged map has all three keys, allocatable is
+# capacity minus all three values, kubepods memory.max is capacity minus the
+# two reservations.
+#
+# Allocatable shrinks by the sum, and on restart the kubelet re-admits every
+# pod on the node against the new allocatable: a pod that no longer fits is
+# rejected (Failed, OutOfmemory), running or not (rehearsed). So the play
+# refuses to write the drop-in unless the node's pod requests still fit.
+#
+# Expects k3s_unit: `k3s` on masters, `k3s-agent` on workers.
+- block:
+    - name: all | Memory reservation values must be positive whole MiB
+      assert:
+        that:
+          - k3s_kube_reserved_memory_mib | int > 0
+          - k3s_system_reserved_memory_mib | int > 0
+          - k3s_eviction_memory_available_mib | int > 0
+        fail_msg: >-
+          k3s_kube_reserved_memory_mib, k3s_system_reserved_memory_mib and
+          k3s_eviction_memory_available_mib must be whole MiB above 0.
+
+    # Read-only, so it also runs in check mode: a dry run shows whether the
+    # node's pods would still fit.
+    - name: all | Read the node's memory capacity
+      command:
+        argv:
+          - /usr/local/bin/kubectl
+          - get
+          - node
+          - "{{ hostname }}"
+          - -o
+          - jsonpath={.status.capacity.memory}
+      delegate_to: "{{ groups['masters'][0] }}"
+      register: k3s_memory_capacity
+      changed_when: false
+      check_mode: false
+      when: k3s_memory_reservation_apply | bool
+
+    - name: all | Read the pods the kubelet will re-admit
+      command:
+        argv:
+          - /usr/local/bin/kubectl
+          - get
+          - pods
+          - --all-namespaces
+          - -o
+          - json
+          - --field-selector
+          - "spec.nodeName={{ hostname }},status.phase!=Succeeded,status.phase!=Failed"
+      delegate_to: "{{ groups['masters'][0] }}"
+      register: k3s_memory_pods
+      changed_when: false
+      check_mode: false
+      when: k3s_memory_reservation_apply | bool
+
+    - name: all | Sum the memory those pods request
+      command:
+        argv: [python3, -c, "{{ lookup('file', 'pod_memory_requests.py') }}"]
+        stdin: "{{ k3s_memory_pods.stdout }}"
+      delegate_to: "{{ groups['masters'][0] }}"
+      register: k3s_memory_requested
+      changed_when: false
+      check_mode: false
+      when: k3s_memory_reservation_apply | bool
+
+    - name: all | Refuse a reservation the node's pods would not fit
+      assert:
+        that:
+          - k3s_memory_capacity.stdout is match('^[0-9]+Ki$')
+          - >-
+            (k3s_memory_requested.stdout | int) + (k3s_kube_reserved_memory_mib | int)
+            + (k3s_system_reserved_memory_mib | int) + (k3s_eviction_memory_available_mib | int)
+            <= (k3s_memory_capacity.stdout | regex_replace('Ki$', '') | int) // 1024
+        fail_msg: >-
+          {{ inventory_hostname }}: pods request {{ k3s_memory_requested.stdout }}Mi, but
+          allocatable would be {{ (k3s_memory_capacity.stdout | regex_replace('Ki$', '') | int) // 1024
+          - (k3s_kube_reserved_memory_mib | int) - (k3s_system_reserved_memory_mib | int)
+          - (k3s_eviction_memory_available_mib | int) }}Mi (capacity {{ k3s_memory_capacity.stdout }}).
+          On restart the kubelet would reject pods (OutOfmemory). Lower the pods'
+          requests or move pods off this node first.
+      when: k3s_memory_reservation_apply | bool
+
+    - name: all | Ensure the kubelet drop-in directory exists
+      file:
+        path: "{{ k3s_kubelet_config_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: all | Write the memory-reservation kubelet drop-in
+      copy:
+        dest: "{{ k3s_kubelet_config_dir }}/50-memory-reservation.conf"
+        owner: root
+        group: root
+        mode: "0600"
+        content: |
+          # Managed by the k3s Ansible role (tasks/configure_memory_reservation.yaml).
+          # Change k3s_*_memory_mib and re-run the playbook; local edits are
+          # overwritten. evictionHard merges with k3s's 00-k3s-defaults.conf.
+          apiVersion: kubelet.config.k8s.io/v1beta1
+          kind: KubeletConfiguration
+          kubeReserved:
+            memory: {{ k3s_kube_reserved_memory_mib | int }}Mi
+          systemReserved:
+            memory: {{ k3s_system_reserved_memory_mib | int }}Mi
+          evictionHard:
+            memory.available: {{ k3s_eviction_memory_available_mib | int }}Mi
+      register: k3s_memory_dropin
+
+    # Restarting k3s leaves running pods alone (containerd keeps them); on the
+    # master the API is unavailable for about 20s.
+    - name: all | Restart k3s so the kubelet reads the drop-in
+      systemd:
+        name: "{{ k3s_unit }}"
+        state: restarted
+      when:
+        - k3s_memory_dropin is changed
+        - k3s_memory_reservation_apply | bool
+
+    - name: all | Wait for the node to be Ready again
+      command:
+        argv:
+          - /usr/local/bin/kubectl
+          - get
+          - node
+          - "{{ hostname }}"
+          - -o
+          - 'jsonpath={.status.conditions[?(@.type=="Ready")].status}'
+      delegate_to: "{{ groups['masters'][0] }}"
+      register: k3s_memory_ready
+      until: k3s_memory_ready.stdout == "True"
+      retries: 30
+      delay: 10
+      changed_when: false
+      when:
+        - k3s_memory_reservation_apply | bool
+        - not ansible_check_mode
+
+    # A drop-in the kubelet ignores looks the same as one it applied, so ask
+    # the kubelet, the node status and the cgroup what actually took.
+    - name: all | Read back what the kubelet applied
+      command:
+        argv:
+          - /usr/local/bin/kubectl
+          - get
+          - --raw
+          - "/api/v1/nodes/{{ hostname }}/proxy/configz"
+      delegate_to: "{{ groups['masters'][0] }}"
+      register: k3s_memory_configz
+      changed_when: false
+      when:
+        - k3s_memory_reservation_apply | bool
+        - not ansible_check_mode
+
+    - name: all | Read the node's capacity and allocatable memory
+      command:
+        argv:
+          - /usr/local/bin/kubectl
+          - get
+          - node
+          - "{{ hostname }}"
+          - -o
+          - jsonpath={.status.capacity.memory} {.status.allocatable.memory}
+      delegate_to: "{{ groups['masters'][0] }}"
+      register: k3s_memory_node
+      changed_when: false
+      when:
+        - k3s_memory_reservation_apply | bool
+        - not ansible_check_mode
+
+    - name: all | Read the pod cgroup's memory cap
+      command:
+        argv: [cat, "{{ k3s_kubepods_memory_max_path }}"]
+      register: k3s_memory_kubepods_max
+      changed_when: false
+      when:
+        - k3s_memory_reservation_apply | bool
+        - not ansible_check_mode
+
+    # The failure the gate above exists to prevent, checked anyway.
+    - name: all | List pods the kubelet rejected for memory
+      command:
+        argv:
+          - /usr/local/bin/kubectl
+          - get
+          - pods
+          - --all-namespaces
+          - --field-selector
+          - "spec.nodeName={{ hostname }}"
+          - -o
+          - 'jsonpath={range .items[?(@.status.reason=="OutOfmemory")]}{.metadata.namespace}/{.metadata.name} {end}'
+      delegate_to: "{{ groups['masters'][0] }}"
+      register: k3s_memory_rejected
+      changed_when: false
+      when:
+        - k3s_memory_reservation_apply | bool
+        - not ansible_check_mode
+
+    - name: all | Fail if the memory reservation did not take
+      vars:
+        kubelet: "{{ (k3s_memory_configz.stdout | from_json).kubeletconfig }}"
+        capacity_ki: "{{ k3s_memory_node.stdout.split()[0] | regex_replace('Ki$', '') | int }}"
+        allocatable_ki: "{{ k3s_memory_node.stdout.split()[1] | regex_replace('Ki$', '') | int }}"
+        reserved_mib: "{{ (k3s_kube_reserved_memory_mib | int) + (k3s_system_reserved_memory_mib | int) }}"
+        kubepods_expected: "{{ (capacity_ki | int) * 1024 - (reserved_mib | int) * 1048576 }}"
+      assert:
+        that:
+          - (kubelet.evictionHard | default({}))['memory.available'] | default('') == (k3s_eviction_memory_available_mib | int | string) + 'Mi'
+          - "'imagefs.available' in (kubelet.evictionHard | default({}))"
+          - "'nodefs.available' in (kubelet.evictionHard | default({}))"
+          - (kubelet.kubeReserved | default({})).memory | default('') == (k3s_kube_reserved_memory_mib | int | string) + 'Mi'
+          - (kubelet.systemReserved | default({})).memory | default('') == (k3s_system_reserved_memory_mib | int | string) + 'Mi'
+          - allocatable_ki | int == (capacity_ki | int) - ((reserved_mib | int) + (k3s_eviction_memory_available_mib | int)) * 1024
+          # The kernel rounds memory.max down to a whole page (up to 64 KiB).
+          - k3s_memory_kubepods_max.stdout | trim is match('^[0-9]+$')
+          - (kubepods_expected | int) - (k3s_memory_kubepods_max.stdout | int) >= 0
+          - (kubepods_expected | int) - (k3s_memory_kubepods_max.stdout | int) < 65536
+          - k3s_memory_rejected.stdout | trim == ''
+        fail_msg: >-
+          {{ inventory_hostname }}: the kubelet reports evictionHard
+          {{ kubelet.evictionHard | default({}) }}, kubeReserved
+          {{ kubelet.kubeReserved | default({}) }}, systemReserved
+          {{ kubelet.systemReserved | default({}) }}; capacity/allocatable
+          {{ k3s_memory_node.stdout }}; kubepods memory.max
+          {{ k3s_memory_kubepods_max.stdout }}; rejected pods:
+          {{ k3s_memory_rejected.stdout | trim | default('none', true) }}.
+          The memory reservation did not take as configured.
+      when:
+        - k3s_memory_reservation_apply | bool
+        - not ansible_check_mode
+  become: true
