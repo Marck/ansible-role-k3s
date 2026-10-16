@@ -1,0 +1,122 @@
+---
+# Pin node-ip, and with it flannel's VXLAN endpoint.
+#
+# flannel derives the address it advertises as its tunnel endpoint from the
+# node's address. Neither node was started with node-ip set, so flannel picked
+# an address off the LAN interface, and that interface also carries the
+# keepalived VIPs. On 2026-10-15 the result was:
+#
+#   k3s-mas01  flannel.alpha.coreos.com/public-ip: 192.168.2.4   (WireGuard VIP)
+#   k3s-wrk01  flannel.alpha.coreos.com/public-ip: 192.168.2.3   (unifi VIP)
+#
+# instead of .10 and .12. A VIP floats by design. When the WireGuard tunnel
+# pods were rescheduled, keepalived moved .4 to the worker, so the worker was
+# encapsulating "to the master" to an address on itself. ALL cross-node pod
+# traffic died in both directions while same-node traffic and the physical LAN
+# stayed perfect, which looked nothing like a network fault: half of every
+# cluster DNS lookup vanished (one CoreDNS replica per node), authentik could
+# not resolve its database and crashlooped, traefik became unreachable from the
+# node holding its LoadBalancer address, and Gatus went red on everything.
+#
+# node-ip is the fix because the node's own address cannot move. Routes, ARP
+# and the FDB were all correct throughout; only the advertised endpoint was
+# wrong, so nothing else here needs changing.
+#
+# A drop-in under config.yaml.d rather than config.yaml itself: k3s merges that
+# directory, so this cannot clobber a config file someone else wrote.
+#
+# Expects k3s_unit: `k3s` on masters, `k3s-agent` on workers.
+- block:
+    - name: node-ip | Resolve the address to pin
+      set_fact:
+        k3s_node_ip_effective: >-
+          {{ k3s_node_ip | default(ansible_host | default(inventory_hostname)) }}
+
+    - name: node-ip | The address to pin must be an IPv4 literal
+      assert:
+        that:
+          - k3s_node_ip_effective is match('^\d{1,3}(\.\d{1,3}){3}$')
+        fail_msg: >-
+          k3s_node_ip_effective is '{{ k3s_node_ip_effective }}', not an IPv4
+          address. This inventory keys hosts by IP; pass k3s_node_ip
+          explicitly if that ever changes, because writing a hostname here
+          would leave flannel guessing again.
+
+    # The whole point is to pin an address the node actually owns. Pinning a
+    # VIP would reproduce the outage, so refuse rather than trust the inventory.
+    - name: node-ip | Read the addresses this node owns
+      command: ip -4 -oneline address show
+      register: k3s_node_ip_addrs
+      changed_when: false
+      check_mode: false
+
+    - name: node-ip | The pinned address must be a permanent address of this node
+      assert:
+        that:
+          - k3s_node_ip_addrs.stdout is search(k3s_node_ip_effective | regex_escape ~ '/')
+          - not (k3s_node_ip_addrs.stdout is search(k3s_node_ip_effective | regex_escape ~ '/32'))
+        fail_msg: >-
+          {{ k3s_node_ip_effective }} is not a non-/32 address of this node.
+          keepalived adds its VIPs as /32, and pinning one of those is exactly
+          the failure this task exists to prevent.
+
+    - name: node-ip | Ensure the k3s config drop-in directory exists
+      file:
+        path: /etc/rancher/k3s/config.yaml.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: node-ip | Write the node-ip drop-in
+      copy:
+        dest: /etc/rancher/k3s/config.yaml.d/10-node-ip.yaml
+        owner: root
+        group: root
+        mode: "0600"
+        content: |
+          # Managed by ansible: roles/k3s/tasks/configure_node_ip.yaml
+          # Pins flannel's VXLAN endpoint to this node's own address so a
+          # floating keepalived VIP can never become the tunnel endpoint.
+          node-ip: {{ k3s_node_ip_effective }}
+      register: k3s_node_ip_dropin
+
+    # Only on change: this restarts the API server on a master, and on either
+    # role the kubelet re-admits every pod against allocatable, which on a node
+    # that is already near its memory cap can reject one.
+    - name: node-ip | Restart k3s so flannel re-advertises the endpoint
+      systemd:
+        name: "{{ k3s_unit }}"
+        state: restarted
+      when: k3s_node_ip_dropin is changed
+
+    - name: node-ip | Wait for the node to serve again after the restart
+      wait_for:
+        host: "{{ k3s_node_ip_effective }}"
+        port: 10250
+        timeout: 180
+      when: k3s_node_ip_dropin is changed
+
+    # Pinning node-ip is not enough on its own. flannel's kube subnet manager
+    # READS flannel.alpha.coreos.com/public-ip from the node and keeps whatever
+    # is already there, so a value detected once (here: a keepalived VIP) is
+    # never corrected by a restart. Verified on k3s v1.36.4: after the drop-in
+    # was applied and the agent restarted, node-args and internal-ip were both
+    # 192.168.2.12 while public-ip was still 192.168.2.3.
+    #
+    # So force the annotation to the pinned address. Detection would now agree
+    # anyway (the node's own /24 address is first on the interface, ahead of the
+    # /32 VIPs), but the annotation is what every other node encapsulates to, so
+    # it is the thing that has to be right. Delegated to a master because only
+    # it has a kubeconfig, the same way the worker labelling task does it.
+    - name: node-ip | Correct flannel's advertised endpoint annotation
+      command: >-
+        /usr/local/bin/kubectl annotate node {{ hostname }}
+        flannel.alpha.coreos.com/public-ip={{ k3s_node_ip_effective }}
+        --overwrite
+      delegate_to: "{{ item }}"
+      with_inventory_hostnames:
+        - masters[0]
+      register: k3s_node_ip_annotated
+      changed_when: "'not annotated' not in k3s_node_ip_annotated.stdout"
+  become: true
