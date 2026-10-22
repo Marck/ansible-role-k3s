@@ -8,7 +8,7 @@ Ansible role to install and configure a k3s cluster. Handles master setup, worke
 | ---------------------------------- | ----------------------------------------- |
 | `setup_cluster_master.yaml`        | Bootstrap the first master node           |
 | `setup_cluster_worker.yaml`        | Join worker nodes to the cluster          |
-| `configure_firewall.yaml`          | Open required firewall ports              |
+| `configure_firewall.yaml`          | iptables on nft (a node without k3s is switched; a node running k3s on legacy is left alone and migrated only with `-e k3s_iptables_migrate=true`, one node per run, which reboots it; the run fails if such a node's next kernel has no legacy iptables), and the required ports |
 | `configure_dns.yaml`               | Static public node DNS via nmcli (never the in-cluster AdGuard VIP — avoids the image-pull bootstrap deadlock; servers via `k3s_node_dns_servers`, which must name **two different operators**, not two addresses from one) |
 | `configure_sysctl.yaml`            | Node kernel tunables via `/etc/sysctl.d/90-k3s.conf` (`k3s_node_sysctls`) — notably `fs.inotify.max_user_instances`, which is per-uid node-wide and stops systemd-in-a-container from booting once exhausted |
 | `configure_graceful_shutdown.yaml` | kubelet graceful node shutdown via a KubeletConfiguration drop-in (`k3s_shutdown_grace_period_*`), so a clean poweroff moves pods in seconds instead of being treated as a crash. Config fields, not `--kubelet-arg` flags: those make the kubelet exit. Also writes `logind.conf.d/zz-k3s-graceful-shutdown.conf`, because on Debian the unattended-upgrades drop-in (30s) otherwise outranks the kubelet's own and the kubelet silently gives up |
