@@ -1,26 +1,130 @@
 ---
+# ── iptables backend: nft on every node ──────────────────────────────────────
+# k3s takes its mode from the rules already loaded, else from
+# /etc/alternatives/iptables (iptables-detect.sh), so after a clean boot the
+# alternative IS k3s's backend. Legacy is a dead end: Raspberry Pi's 6.18
+# kernel is built without CONFIG_NETFILTER_XTABLES_LEGACY (no ip_tables.ko),
+# and a node left on legacy boots such a kernel into a k3s with no working
+# rules.
+#
+# A node without k3s is switched directly. A node already running k3s on
+# legacy is never switched under it, which would strand its rules in the old
+# backend; it is migrated on request (-e k3s_iptables_migrate=true, one node
+# per run): switch, reboot, check k3s came back on nft. Until then it is left
+# alone, unless the kernel it boots next has no legacy iptables: then the run
+# fails, because that reboot would take the node down.
 - block:
-  - name: Changing to iptables-legacy
-    alternatives:
-      path: /usr/sbin/iptables-legacy
-      name: iptables
-    register: ip4_legacy
-    when: rpi is true
+  - name: firewall | Read the iptables backend, k3s presence and next-boot kernel
+    shell: |
+      set -o pipefail
+      readlink -f /etc/alternatives/iptables || echo none
+      test -x {{ k3s_binary_path | quote }} && echo k3s || echo no-k3s
+      # The newest installed kernel of the running flavour is the next boot.
+      run=$(uname -r)
+      next=$(ls -1 /lib/modules | grep -F -- "${run#*+}" | sort -V | tail -1)
+      modprobe -n -S "${next:-$run}" ip_tables >/dev/null 2>&1 && echo legacy-ok || echo legacy-missing
+      echo "${next:-$run}"
+    args:
+      executable: /bin/bash
+    register: k3s_iptables_state
+    changed_when: false
+    check_mode: false
 
-  - name: Changing to ip6tables-legacy
-    alternatives:
-      path: /usr/sbin/ip6tables-legacy
-      name: ip6tables
-    register: ip6_legacy
-    when: rpi is true
+  - name: firewall | Note the state
+    set_fact:
+      k3s_iptables_on_nft: "{{ 'nft' in k3s_iptables_state.stdout_lines[0] }}"
+      k3s_iptables_live: "{{ k3s_iptables_state.stdout_lines[1] == 'k3s' }}"
+      k3s_iptables_next_has_legacy: "{{ k3s_iptables_state.stdout_lines[2] == 'legacy-ok' }}"
+      k3s_iptables_next_kernel: "{{ k3s_iptables_state.stdout_lines[3] }}"
 
-  # Only flush when actually switching backends - otherwise rules added in this
-  # run would be wiped and re-added as changed on every subsequent run.
-  - name: Flush iptables after switching to iptables-legacy
+  - name: firewall | Switch a node without k3s to nft
+    alternatives:
+      path: "/usr/sbin/{{ item }}-nft"
+      name: "{{ item }}"
+    loop: [iptables, ip6tables]
+    register: k3s_iptables_switched
+    when: not k3s_iptables_on_nft and not k3s_iptables_live
+
+  # Only on an actual switch: a flush on every run would wipe the rules this
+  # run adds and report them changed each time.
+  - name: firewall | Flush after switching backends  # noqa: no-handler (must run before the port rules below)
     iptables:
       flush: true
     changed_when: false
-    when: rpi is true and (ip4_legacy.changed or ip6_legacy.changed)
+    when: k3s_iptables_switched is changed
+
+  - name: firewall | Refuse to leave a node on legacy that will boot without it
+    fail:
+      msg: >-
+        {{ inventory_hostname }} runs k3s on legacy iptables, and the kernel it
+        boots next ({{ k3s_iptables_next_kernel }}) has no legacy iptables: that
+        reboot brings k3s up with no working rules. Migrate it to nft first,
+        one node per run:
+        ansible-playbook install_kubernetes.yaml --tags firewall --limit {{ inventory_hostname }} -e k3s_iptables_migrate=true
+    when:
+      - k3s_iptables_live and not k3s_iptables_on_nft
+      - not k3s_iptables_next_has_legacy
+      - not k3s_iptables_migrate | default(false) | bool
+
+  - name: firewall | Legacy node not migrated yet
+    debug:
+      msg: >-
+        {{ inventory_hostname }} still runs k3s on legacy iptables. Its next
+        kernel still supports it, so nothing changes now; migrate when
+        convenient with -e k3s_iptables_migrate=true (reboots the node).
+    when:
+      - k3s_iptables_live and not k3s_iptables_on_nft
+      - k3s_iptables_next_has_legacy
+      - not k3s_iptables_migrate | default(false) | bool
+
+  - name: firewall | Migrate a k3s node from legacy to nft
+    when:
+      - k3s_iptables_live and not k3s_iptables_on_nft
+      - k3s_iptables_migrate | default(false) | bool
+    block:
+      - name: firewall | Migrate one node per run
+        assert:
+          that: ansible_play_hosts | length == 1
+          fail_msg: The migration reboots the node; --limit it to one host.
+
+      - name: firewall | Point iptables at nft
+        alternatives:
+          path: "/usr/sbin/{{ item }}-nft"
+          name: "{{ item }}"
+        loop: [iptables, ip6tables]
+
+      # The reboot leaves the legacy tables empty, so iptables-detect.sh
+      # falls through to the alternative and k3s starts on nft.
+      - name: firewall | Reboot onto the new backend
+        reboot:
+          reboot_timeout: 900
+
+      - name: firewall | Wait for k3s to program its rules in nft
+        shell: |
+          set -o pipefail
+          echo "legacy=$( (iptables-legacy-save 2>/dev/null || true) | grep -c '^-A' || true)"
+          echo "nft=$(iptables-nft-save | grep -c '^-A KUBE' || true)"
+        args:
+          executable: /bin/bash
+        register: k3s_iptables_after
+        changed_when: false
+        until: >-
+          k3s_iptables_after.stdout_lines[0] == 'legacy=0'
+          and (k3s_iptables_after.stdout_lines[1].split('=')[1] | int) > 10
+        retries: 60
+        delay: 5
+
+      - name: firewall | Wait for the node to be Ready
+        command: >-
+          /usr/local/bin/kubectl get node {{ hostname }}
+          -o jsonpath={.status.conditions[?(@.type=="Ready")].status}
+        register: k3s_iptables_node_ready
+        changed_when: false
+        # Templated before the block's when, so it must resolve outside a cluster too.
+        delegate_to: "{{ (groups['masters'] | default([inventory_hostname]))[0] }}"
+        until: k3s_iptables_node_ready.stdout == 'True'
+        retries: 60
+        delay: 5
 
   - name: Configure iptables ports on masters
     iptables:
@@ -31,7 +135,6 @@
     loop: "{{ kubernetes.firewall.inbound_masters_ports }}"
     loop_control:
       loop_var: port
-    register: iptables_master_ports_applied
     when: type == 'master'
 
   - name: Configure iptables ports on workers
@@ -43,7 +146,6 @@
     loop: "{{ kubernetes.firewall.inbound_workers_ports }}"
     loop_control:
       loop_var: port
-    register: iptables_worker_ports_applied
     when: type == 'worker'
 
   - name: Stop and disable firewalld on NUC
@@ -56,17 +158,20 @@
       - rpi is false
     failed_when: false
 
-  # Below steps are needed, because the iptables rules are not persistent and gone at boot
-  - name: Save rules to file
-    shell: iptables-save > /etc/iptables.conf
-    changed_when: false
-    when: iptables_master_ports_applied.changed is true or iptables_worker_ports_applied.changed is true
-
-  - name: Edit /etc/rc.local and insert the iptables-restore restore command
-    lineinfile:
+  # No boot-time restore. It replayed an iptables-save snapshot, which is
+  # mostly k3s's own rules from the day it was taken: stale service and
+  # endpoint NAT until k3s rewrote them, and loaded into whichever backend the
+  # alternative pointed at. k3s programs its rules itself, and the port rules
+  # above are additive on an ACCEPT-policy INPUT chain.
+  - name: Find rc.local (a symlink into rc.d on Rocky)
+    stat:
       path: /etc/rc.local
-      regexp: '^iptables-restore'
-      insertbefore: '^exit 0'
-      line: sudo iptables-restore < /etc/iptables.conf
-    when: iptables_master_ports_applied.changed is true or iptables_worker_ports_applied.changed is true
+    register: k3s_rc_local
+
+  - name: Stop restoring the iptables snapshot at boot
+    lineinfile:
+      path: "{{ k3s_rc_local.stat.lnk_source | default('/etc/rc.local', true) }}"
+      regexp: '^sudo iptables-restore < /etc/iptables.conf$'
+      state: absent
+    when: k3s_rc_local.stat.exists
   become: true
