@@ -108,6 +108,8 @@
           executable: /bin/bash
         register: k3s_iptables_after
         changed_when: false
+        # Check mode skips the reboot and this shell, leaving no output to test.
+        when: not ansible_check_mode
         until: >-
           k3s_iptables_after.stdout_lines[0] == 'legacy=0'
           and (k3s_iptables_after.stdout_lines[1].split('=')[1] | int) > 10
@@ -120,6 +122,7 @@
           -o jsonpath={.status.conditions[?(@.type=="Ready")].status}
         register: k3s_iptables_node_ready
         changed_when: false
+        when: not ansible_check_mode
         # Templated before the block's when, so it must resolve outside a cluster too.
         delegate_to: "{{ (groups['masters'] | default([inventory_hostname]))[0] }}"
         until: k3s_iptables_node_ready.stdout == 'True'
